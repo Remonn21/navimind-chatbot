@@ -46,7 +46,7 @@ services:
       # public URL. Leave unset for the private-network deployment.
       CHATBOT_SERVICE_TOKEN: "${CHATBOT_SERVICE_TOKEN:-}"
     ports:
-      - "8000:8000"
+      - "8020:8000"
     mem_limit: 2g
 
 volumes:
