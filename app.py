@@ -45,7 +45,8 @@ class PoiIn(BaseModel):
     code: str | None = None
     type: str | None = None
     floorLevel: int = 0
-    category: str | None = None
+    category: str | None = None          # primary (single) category name — legacy
+    categories: list[str] = []           # all category + sub-category names (M2M)
     description: str | None = None
     aliases: list[str] = []
     productKeywords: list[str] = []
@@ -59,6 +60,8 @@ class ChatRequest(BaseModel):
     lang: str | None = None
     floorLevel: int | None = None
     pendingPoiId: str | None = None      # = the backend's incoming lastSuggestedPoiId
+    productsVersion: str | None = None   # Building.productUpdatedAt (product-cache key)
+    interests: list[str] | None = None   # the user's interest category names (personalization)
     pois: list[PoiIn] | None = None
 
 
@@ -103,5 +106,8 @@ def chat(req: ChatRequest):
         catalog=catalog,
         pending_poi_id=req.pendingPoiId,
         lang=req.lang,
+        building_id=req.buildingId,
+        products_version=req.productsVersion,
+        interests=req.interests,
     )
     return ChatResponse(**result)

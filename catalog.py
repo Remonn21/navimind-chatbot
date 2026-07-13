@@ -45,17 +45,30 @@ def get_embedder():
     return _embedder
 
 
+def _poi_categories(poi: dict) -> list[str]:
+    """All category + sub-category names linked to a POI (many-to-many)."""
+    cats = poi.get("categories")
+    if cats:
+        return [str(c) for c in cats if c]
+    one = _poi_category(poi)
+    return [one] if one else []
+
+
 def _poi_category(poi: dict) -> str:
+    """A single representative category name (for display)."""
     cat = poi.get("category")
     if isinstance(cat, dict):
         return cat.get("name") or ""
-    return cat or ""
+    if cat:
+        return str(cat)
+    cats = poi.get("categories") or []
+    return str(cats[0]) if cats else ""
 
 
 def _rag_text(poi: dict) -> str:
     parts = [
         poi.get("name") or "",
-        _poi_category(poi),
+        " ".join(_poi_categories(poi)),
         poi.get("type") or "",
         " ".join(poi.get("aliases") or []),
         " ".join(poi.get("productKeywords") or []),
@@ -78,7 +91,7 @@ class BuildingCatalog:
 
         for p in self.pois:
             pid = p["id"]
-            names = [p.get("name") or "", _poi_category(p)]
+            names = [p.get("name") or "", *_poi_categories(p)]
             names += list(p.get("aliases") or [])
             names += list(p.get("productKeywords") or [])
             for raw in names:
@@ -152,10 +165,11 @@ class BuildingCatalog:
         return out
 
     def category_siblings(self, poi: dict) -> list[dict]:
-        cat = _poi_category(poi)
-        if not cat:
+        """POIs that share at least one category with this POI."""
+        cats = set(_poi_categories(poi))
+        if not cats:
             return []
-        return [p for p in self.pois if _poi_category(p) == cat]
+        return [p for p in self.pois if cats & set(_poi_categories(p))]
 
     def warm(self):
         """Pre-build embeddings so the first real request isn't slow."""

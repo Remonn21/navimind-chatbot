@@ -115,10 +115,12 @@ def fetch_backend_pois(backend_url, building_id):
     pois = []
     for p in raw:
         cat = p.get("category")
+        cats = [c.get("name") for c in (p.get("categories") or []) if c.get("name")]
         pois.append(dict(
             id=p["id"], name=p.get("name", ""), code=p.get("code"),
             type=str(p.get("type") or ""), floorLevel=p.get("floorLevel", 0),
             category=(cat.get("name") if isinstance(cat, dict) else cat),
+            categories=cats,
             description=p.get("description"), aliases=p.get("aliases") or [],
             productKeywords=p.get("productKeywords") or [], active=p.get("active", True),
         ))
@@ -147,6 +149,20 @@ def run_suite(t, pois):
     def expect_no_action(r):
         return not r.get("action")
 
+    def expect_mall_listing(r):
+        # A real mall_info listing names actual stores and is NOT the
+        # "couldn't find that" not-found template.
+        rep = (r.get("reply") or "")
+        if not r.get("action") and "couldn't find" not in rep and "مش لاقي" not in rep:
+            return any(s in rep for s in ("Hub", "Store", "Kitchen", "Gaming"))
+        return False
+
+    def expect_refusal(r):
+        # out_of_scope: no action, non-empty reply, and does NOT contain a joke
+        # punchline / the word "joke" answered back.
+        rep = (r.get("reply") or "").lower()
+        return (not r.get("action")) and bool(rep.strip()) and "atoms" not in rep
+
     scenarios = [
         ("EN product query -> suggest", "where can I buy a laptop?", None,
          expect_suggest("p_computers"), False),
@@ -172,6 +188,18 @@ def run_suite(t, pois):
          lambda r: r.get("handoff") == "recommend", False),
         ("AR recommend -> handoff", "اقترح عليا مكان اروحه", None,
          lambda r: r.get("handoff") == "recommend", False),
+        ("AR 'list all shops' -> mall_info listing [llm]", "قولي كل المحلات", None,
+         expect_mall_listing, True),
+        ("EN 'list all shops' -> mall_info listing [llm]", "show me all the shops", None,
+         expect_mall_listing, True),
+        ("EN imperative 'list all stores' -> mall_info [llm]", "list all stores", None,
+         expect_mall_listing, True),
+        ("EN joke -> refuse, no joke told [llm]", "tell me a joke", None,
+         expect_refusal, True),
+        ("AR joke -> refuse [llm]", "قولي نكتة", None,
+         expect_refusal, True),
+        ("pending + real question not hijacked as 'no' [llm]", "هو ادهم بيفهم؟", "p_mobiles",
+         lambda r: not r.get("clearPending"), True),
         ("greeting -> chitchat, no action [llm]", "hello, how are you?", None,
          expect_no_action, True),
         ("out-of-scope -> refusal, no action [llm]", "what is the capital of Egypt?", None,

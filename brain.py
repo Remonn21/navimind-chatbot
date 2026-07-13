@@ -12,6 +12,7 @@ from __future__ import annotations
 import random
 
 import llm
+import products
 from catalog import BuildingCatalog, _poi_category
 from text_utils import (
     detect_language, detect_yes_no, looks_like_list_query, norm,
@@ -23,8 +24,10 @@ from text_utils import (
 # offer in context it misread "recommend me a place" as declining the offer.
 _RECOMMEND_HINTS = [norm(h) for h in [
     "recommend", "recommendation", "suggest", "suggestion", "where should i go",
-    "what should i visit", "اقترح", "اقتراح", "رشح", "رشحلي", "ارشدني",
+    "what should i visit", "good product", "a good", "best product", "whats good",
+    "what's good", "اقترح", "اقتراح", "رشح", "رشحلي", "ارشدني",
     "انصحني", "نصحني", "تنصحني", "اروح فين", "فين اروح", "اماكن حلوه",
+    "حاجه حلوه", "حاجة حلوة", "افضل", "احسن حاجه",
 ]]
 
 
@@ -46,9 +49,13 @@ STRICT RULE: You are NOT a general-purpose assistant. You never perform tasks un
 - Any request for things NOT sold in Electronics, Furniture, or Household sections (e.g., food, chocolate, grocery, clothes, shoes, makeup, medicines) -> intent = "out_of_scope".
 - Any request involving people, names, or "buying" humans (e.g., "أنا عايز أشتري محمد") -> intent = "out_of_scope".
 - Any general-knowledge or trivia question with no connection to the mall — capitals, countries, presidents/politicians, history, geography, religion, sports, world events, science facts, celebrities, etc. (e.g., "what is the capital of Egypt", "من هو رئيس مصر", "كلمني عن كأس العالم") -> intent = "out_of_scope". Do NOT answer the factual question yourself, even if you know the answer — always classify it as "out_of_scope" and let the standard out-of-scope reply handle it.
+- Requests for entertainment or content generation — jokes, riddles, poems, stories, songs, fun facts, "say something funny" (e.g., "tell me a joke", "قولي نكتة", "قولي نكته", "احكيلي حكاية", "make me laugh") -> intent = "out_of_scope". NEVER actually tell the joke/riddle/story yourself, even a short one; always classify it as "out_of_scope" and return an empty "reply". This is a hard rule.
+- A vague request for a suggestion with NO concrete product or store named — "recommend something", "tell me a good product", "what's good here", "something nice", "رشحلي حاجة", "قولي حاجة حلوة", "عايز حاجة كويسة", "ايه احسن حاجة" -> intent = "recommend" (leave "search_query" null, "reply" empty). Do NOT invent a product and do NOT match it to a random store.
 - If the user asks for your name or who you are -> intent = "chitchat", reply = "مرحباً! أنا مساعد Navimind، موجود هنا عشان أساعدك تلاقي أي محل أو منتج في المول." (if Arabic) or "I am the Navimind Assistant, here to help you find any store or product in the mall." (if English).
 - If the user greets you (e.g., "hi", "hello", "مرحباً", "أهلاً") -> intent = "chitchat", reply a short, professional welcome such as "Hello! Welcome to Navimind. How can I help you today?" (if English) or "أهلاً بيك في Navimind! إزاي أقدر أساعدك النهاردة؟" (if Arabic).
 - If the user asks how you are doing (e.g., "how are you", "كيف حالك", "ازيك") -> intent = "chitchat", reply professionally and briefly, e.g. "I'm doing great, thank you for asking! How can I help you find something in the mall today?" (if English) or "أنا تمام، شكراً لسؤالك! إزاي أقدر أساعدك تلاقي حاجة في المول النهاردة؟" (if Arabic).
+- The words "store", "stores", "shop", "shops", "محل", "محلات" are NOT products and can NEVER be a "search_query". If the ONLY thing the user is asking about is the stores/shops themselves — listing them, or what stores the mall has — the intent is ALWAYS "mall_info", NEVER "product_query" or "list_query". This holds for every phrasing, including imperatives: "list all stores", "list all shops", "show me all the shops", "show me every store", "give me all the shops", "what stores are here", "what shops do you have", "قولي كل المحلات", "اعرض كل المحلات", "ايه المحلات الموجودة", "فيه محلات ايه هنا", "عندكم محلات ايه" -> intent = "mall_info". Leave "search_query" null and "reply" empty; the system fills the store list itself.
+- IMPORTANT boundary: "mall_info" is ONLY for the whole-mall, no-specific-product case. If the message names a specific product, brand, or category (e.g., "what laptops do you have", "which shops sell phones", "ايه أنواع الموبايلات", "ماركات اللابتوبات"), that product/category IS the "search_query" and the intent is "product_query" or "list_query", NOT "mall_info".
 
 STRICT LANGUAGE RULE FOR ALL "reply" TEXT:
 - The "reply" field must be written ENTIRELY in the SAME language as the user's message (pure English if the user wrote in English, pure Arabic/Egyptian Arabic if the user wrote in Arabic). Never mix languages within a single reply, and never answer in a different language than the one the user used.
@@ -102,7 +109,8 @@ def llm_understand(user_text: str, lang: str, pending: bool) -> dict:
                  if lang == "en" else
                  "The user's message is ARABIC; the \"reply\" must be entirely in professional Arabic/Egyptian.\n")
     if pending:
-        context = "There IS a pending yes/no navigation offer. Only classify as navigate_confirm_yes/no if the message is itself a standalone confirmation word.\n"
+        context = ("There IS a pending yes/no navigation offer. Classify as navigate_confirm_yes/no ONLY when the ENTIRE message is a bare standalone confirmation word (yes/no/ايوه/لأ/تمام/ماشي) and nothing else. "
+                   "If the message contains a question, a new request, or any other content — even a short one like \"does Adham understand?\" / \"هو ادهم بيفهم؟\" — it is NOT a confirmation: classify it by its own meaning (chitchat, product_query, out_of_scope, etc.), never as navigate_confirm_yes/no.\n")
     else:
         context = ("There is no pending navigation offer; do not classify this as navigate_confirm_yes/no "
                    "unless it is itself a standalone confirmation word (yes/no/ايوه/لأ/تمام/ماشي) with no other content.\n")
@@ -266,7 +274,9 @@ def _is_echo(reply: str, message: str) -> bool:
 # --- orchestrator ----------------------------------------------------------
 
 def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
-            lang: str | None = None) -> dict:
+            lang: str | None = None, building_id: str | None = None,
+            products_version: str | None = None,
+            interests: list[str] | None = None) -> dict:
     """Returns {reply, lang, action?}. `action` = {type, poiId, floorLevel}.
     A "suggest" action doubles as the pending confirmation offer: the caller
     echoes its poiId back as `pending_poi_id` on the next turn."""
@@ -292,13 +302,16 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
     if awaiting and confirmation and not direct_poi:
         intent = "navigate_confirm_yes" if confirmation == "yes" else "navigate_confirm_no"
         understanding = {"intent": intent, "search_query": None, "reply": ""}
+    elif looks_like_recommend_query(message):
+        # Checked before the direct-POI fast-path: "recommend a good phone"
+        # names a product ("phone"), but the recommend cue means the user wants
+        # product suggestions, not to be routed straight to the store.
+        understanding = {"intent": "recommend", "search_query": None, "reply": ""}
     elif direct_poi:
         understanding = {
             "intent": "list_query" if looks_like_list_query(message) else "product_query",
             "search_query": message, "reply": "",
         }
-    elif looks_like_recommend_query(message):
-        understanding = {"intent": "recommend", "search_query": None, "reply": ""}
     else:
         understanding = llm_understand(message, lang, pending=awaiting)
 
@@ -329,9 +342,24 @@ def respond(message: str, catalog: BuildingCatalog, pending_poi_id: str | None,
                    else "Okay, let me know if you need anything else.",
                    clear_pending=True)
 
-    # Recommendation request -> the backend owns the recommendation engine
-    # (user history, ratings, position); hand the turn off to it.
+    # Recommendation request -> recommend real PRODUCTS from the backend catalog
+    # (ported from final_chatbot). If a product/category is named, recommend
+    # within that store; otherwise recommend top-rated products building-wide.
+    # If products can't be loaded, fall back to the backend store engine.
     if intent == "recommend":
+        # Resolve which store/category the recommendation targets. A confident
+        # match (e.g. "recommend a good phone" -> phones) recommends within that
+        # store; otherwise recommend top-rated products building-wide.
+        poi, conf = resolve_poi(catalog, understanding.get("search_query"), message)
+        target_poi = poi if conf >= CONFIDENT_MATCH_THRESHOLD else None
+        rec = products.recommend(building_id, products_version, target_poi, lang,
+                                 query=understanding.get("search_query") or message,
+                                 interests=interests)
+        if rec:
+            reply, top_poi_id, floor = rec
+            action = ({"type": "suggest", "poiId": top_poi_id, "floorLevel": floor}
+                      if top_poi_id else None)
+            return out(reply, action)
         return out("", handoff="recommend")
 
     # 3. List query -> list stores in the matched category, offer to navigate.
